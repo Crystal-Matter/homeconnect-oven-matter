@@ -19,6 +19,8 @@ When uncommissioned, it prints the Matter QR code and setup PIN to stdout.
 
 ## Local Run
 
+Use the [Home Connect Profile Downloader](https://github.com/bruestel/homeconnect-profile-downloader) to download your Appliance profiles, select "openHAB" as target. The downloaded ZIP-file contains each Appliance encryption Key and feature descriptions, place these in the certs folder.
+
 ```bash
 crystal run src/homeconnect-oven-matter.cr -- \
   --ip=192.168.4.79 \
