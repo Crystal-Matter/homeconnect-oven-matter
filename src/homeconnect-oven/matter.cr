@@ -24,11 +24,13 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
   DEFAULT_MICROWAVE_SECONDS =  60
   DEFAULT_PREHEAT_CELSIUS   = 180
   DEFAULT_POLL_INTERVAL     = 5.seconds
+  CONNECT_RETRY_DELAY       = 5.seconds
 
   @controller : HomeconnectOven::Controller::Control
   @storage_file : String
   @poll_interval : Time::Span
   @running : Atomic(Bool) = Atomic(Bool).new(false)
+  @controller_connected : Atomic(Bool) = Atomic(Bool).new(false)
   @suppress_callbacks : Atomic(Bool) = Atomic(Bool).new(false)
   @snapshot : HomeconnectOven::Controller::Snapshot? = nil
   @snapshot_lock : Mutex = Mutex.new
@@ -118,7 +120,7 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
     @pause_resume_button.as(::Matter::Cluster::OnOffCluster)
   end
 
-  def sync_status_from_oven(refresh : Bool = true) : Nil
+  def sync_status_from_oven(refresh : Bool = true, raise_on_error : Bool = false) : Nil
     started_at = Time.instant
     Log.debug { "sync status start refresh=#{refresh}" }
     snapshot = @controller.status_snapshot(refresh: refresh)
@@ -144,7 +146,11 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
       "temp_c=#{snapshot.cavity_temperature_celsius.inspect}"
     end
   rescue ex
-    Log.warn(exception: ex) { "status sync failed" }
+    if raise_on_error
+      raise ex
+    else
+      Log.warn(exception: ex) { "status sync failed" }
+    end
   end
 
   protected def build_storage_manager : ::Matter::Storage::Manager
@@ -272,10 +278,9 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
 
   protected def before_start : Nil
     started_at = Time.instant
-    Log.info { "before_start: connecting to HomeConnect oven" }
-    @controller.connect
-    Log.info { "before_start: initial status sync" }
-    sync_status_from_oven
+    interfaces = ip_addresses.map { |ip| "#{ip.address}(#{ip.family == Socket::Family::INET ? "v4" : "v6"})" }.join(", ")
+    Log.info { "before_start: mdns interfaces=#{interfaces}" }
+    Log.info { "before_start: deferring oven connection until device start" }
     elapsed_ms = (Time.instant - started_at).total_milliseconds.round(1)
     Log.info { "before_start complete in #{elapsed_ms}ms; Matter UDP port=#{port}" }
     Log.info { "using ephemeral Matter UDP port #{port}" }
@@ -297,6 +302,7 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
     print_qr_code
 
     manual_code = setup_code
+    puts "QR payload: #{qr_code_payload}"
     puts "Setup PIN: #{setup_pin}"
     puts "Manual pairing code: #{manual_code}"
     puts "chip-tool pairing command:"
@@ -328,7 +334,10 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
   protected def on_shutdown : Nil
     Log.info { "on_shutdown: stopping polling loop and closing controller" }
     @running.set(false)
-    @controller.close
+    if @controller_connected.get
+      @controller.close
+      @controller_connected.set(false)
+    end
     Log.info { "on_shutdown complete" }
   rescue ex
     Log.warn(exception: ex) { "controller close failed" }
@@ -336,13 +345,81 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
 
   private def poll_loop : Nil
     Log.info { "poll loop started" }
+    waiting_for_commissioning = false
+
     while @running.get
-      sleep @poll_interval
-      break unless @running.get
-      Log.debug { "poll tick: syncing status from oven" }
-      sync_status_from_oven
+      begin
+        if fabric_table.empty?
+          unless waiting_for_commissioning
+            Log.info { "poll loop: waiting for commissioning before oven sync/connect" }
+            waiting_for_commissioning = true
+          end
+
+          if @controller_connected.get
+            begin
+              @controller.close
+            rescue
+            end
+            @controller_connected.set(false)
+          end
+
+          sleep @poll_interval
+          next
+        end
+
+        if waiting_for_commissioning
+          Log.info { "poll loop: commissioning complete; enabling oven sync/connect" }
+          waiting_for_commissioning = false
+        end
+
+        unless @controller_connected.get
+          Log.info { "poll loop: connecting to oven" }
+          @controller.connect
+          @controller_connected.set(true)
+          Log.info { "poll loop: oven connected" }
+        end
+
+        Log.debug { "poll tick: syncing status from oven" }
+        sync_status_from_oven(refresh: true, raise_on_error: true)
+        sleep @poll_interval
+      rescue ex
+        Log.warn(exception: ex) { "poll loop: oven sync/connect failed; retrying in #{CONNECT_RETRY_DELAY.total_seconds}s" }
+        if @controller_connected.get
+          begin
+            @controller.close
+          rescue
+          end
+          @controller_connected.set(false)
+        end
+        sleep CONNECT_RETRY_DELAY
+      end
     end
     Log.info { "poll loop exited" }
+  end
+
+  protected def default_ip_addresses : Array(Socket::IPAddress)
+    ips = [] of Socket::IPAddress
+
+    begin
+      socket = UDPSocket.new(:inet6)
+      socket.connect("2606:4700:4700::1111", 53)
+      addr = socket.local_address
+      socket.close
+      ips << Socket::IPAddress.new(addr.address, 0)
+    rescue
+    end
+
+    begin
+      socket = UDPSocket.new(:inet)
+      socket.connect("8.8.8.8", 80)
+      addr = socket.local_address
+      socket.close
+      ips << Socket::IPAddress.new(addr.address, 0)
+    rescue
+    end
+
+    ips << Socket::IPAddress.new("127.0.0.1", 0) if ips.empty?
+    ips
   end
 
   private def handle_microwave_on_off(state : Bool) : Nil

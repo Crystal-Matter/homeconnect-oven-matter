@@ -55,13 +55,14 @@ HC_FEATURE_XML=24000094_FeatureMapping.xml
 then
 
 ```bash
-docker compose up --build
+chmod -R a+rwX ./data
+docker compose up
 ```
 
 `docker-compose.yml` uses `network_mode: host` and mounts:
 
 - `./certs -> /app/certs` (read-only)
-- `./data -> /app/data`
+- `./data -> /app/data` (needs permissive write permissions)
 
 ## Validation
 
