@@ -5,6 +5,8 @@ Matter bridge service for a HomeConnect oven using `homeconnect_local` over TLS-
 The service is non-interactive and binds Matter UDP on an ephemeral port (`port: 0`).
 When uncommissioned, it prints the Matter QR code and setup PIN to stdout.
 
+![Image](https://github.com/user-attachments/assets/3a7d6920-2d43-4676-bd52-758723f34a47)
+
 ## Endpoints
 
 1. `endpoint 1` microwave slider: `OnOff + LevelControl` (`0..100%` -> `1..100s`)
