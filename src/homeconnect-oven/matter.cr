@@ -441,18 +441,15 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
 
   private def handle_microwave_on_off(state : Bool) : Nil
     return if @suppress_callbacks.get
+    return @controller.stop unless state
 
-    if state
-      if level_to_percent(microwave_level_cluster.current_level) <= 0
-        # Treat 0% (level 1) as an inactive command slot so the user can re-arm later.
-        with_suppressed_callbacks { microwave_on_off_cluster.on = false }
-        return
-      end
-      seconds = @microwave_seconds_target
-      @controller.microwave(seconds)
-    else
-      @controller.stop
+    if level_to_percent(microwave_level_cluster.current_level) <= 0
+      # Treat 0% (level 1) as an inactive command slot so the user can re-arm later.
+      with_suppressed_callbacks { microwave_on_off_cluster.on = false }
+      return
     end
+    seconds = @microwave_seconds_target
+    @controller.microwave(seconds)
   rescue ex
     Log.warn(exception: ex) { "microwave action failed" }
   end
@@ -496,7 +493,7 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
 
   private def handle_preheat_on_off(state : Bool) : Nil
     return if @suppress_callbacks.get
-    return unless state
+    return @controller.stop unless state
 
     if level_to_percent(preheat_level_cluster.current_level) <= 0
       with_suppressed_callbacks { preheat_on_off_cluster.on = false }
