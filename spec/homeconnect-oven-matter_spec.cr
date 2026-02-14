@@ -76,10 +76,12 @@ describe HomeconnectOven::Matter do
     control = FakeOvenControl.new
     device = build_device(control, "/tmp/spec_preheat_storage.json")
 
-    device.preheat_level_cluster.level = 1_u8
+    device.preheat_on_off_cluster.on = true
+    device.preheat_level_cluster.level = 130_u8
     device.preheat_level_cluster.level = 254_u8
 
-    control.preheat_calls.first.should eq(100)
+    control.preheat_calls.first.should eq(180)
+    control.preheat_calls[1].should be > 100
     control.preheat_calls.last.should eq(200)
   end
 
@@ -96,8 +98,8 @@ describe HomeconnectOven::Matter do
     device = build_device(control, "/tmp/spec_sync_storage.json")
     device.sync_status_from_oven(refresh: false)
 
-    device.door_contact_cluster.state_value?.should be_true
-    device.operation_contact_cluster.state_value?.should be_true
+    device.door_contact_cluster.state_value?.should be_false
+    device.operation_contact_cluster.state_value?.should be_false
     device.power_button_cluster.on?.should be_true
     device.pause_resume_button_cluster.on?.should be_true
     device.cavity_temperature_cluster.measured_value.should eq(18_200_i16)
@@ -133,5 +135,53 @@ describe HomeconnectOven::Matter do
 
     control.resume_calls.should eq(1)
     control.pause_calls.should eq(1)
+  end
+
+  it "resets visual control endpoints when operation transitions inactive" do
+    control = FakeOvenControl.new
+    device = build_device(control, "/tmp/spec_operation_reset_storage.json")
+
+    device.microwave_level_cluster.level = 200_u8
+    device.preheat_level_cluster.level = 200_u8
+    device.microwave_on_off_cluster.on = true
+    device.preheat_on_off_cluster.on = true
+
+    control.snapshot = HomeconnectOven::Controller::Snapshot.new(
+      operation_state: "Run",
+      door_state: "Closed",
+      cavity_temperature_celsius: 100,
+      door_open: false,
+      power_on: true
+    )
+    device.sync_status_from_oven(refresh: false)
+
+    control.snapshot = HomeconnectOven::Controller::Snapshot.new(
+      operation_state: "Inactive",
+      door_state: "Closed",
+      cavity_temperature_celsius: 80,
+      door_open: false,
+      power_on: false
+    )
+    device.sync_status_from_oven(refresh: false)
+
+    device.operation_contact_cluster.state_value?.should be_true
+    device.microwave_on_off_cluster.on?.should be_false
+    device.preheat_on_off_cluster.on?.should be_false
+    device.microwave_level_cluster.current_level.should eq(1_u8)
+    device.preheat_level_cluster.current_level.should eq(1_u8)
+  end
+
+  it "does not execute microwave or preheat commands at 0% slider level" do
+    control = FakeOvenControl.new
+    device = build_device(control, "/tmp/spec_zero_level_storage.json")
+
+    device.preheat_level_cluster.level = 1_u8
+    device.preheat_on_off_cluster.on = true
+    device.microwave_level_cluster.level = 1_u8
+    device.microwave_on_off_cluster.on = true
+
+    control.preheat_calls.should be_empty
+    control.microwave_calls.should be_empty
+    device.microwave_on_off_cluster.on?.should be_false
   end
 end

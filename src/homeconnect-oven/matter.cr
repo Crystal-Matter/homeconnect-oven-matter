@@ -39,6 +39,7 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
 
   @microwave_on_off : ::Matter::Cluster::OnOffCluster? = nil
   @microwave_level : ::Matter::Cluster::LevelControlCluster? = nil
+  @preheat_on_off : ::Matter::Cluster::OnOffCluster? = nil
   @preheat_level : ::Matter::Cluster::LevelControlCluster? = nil
   @cavity_temp : ::Matter::Cluster::TemperatureMeasurementCluster? = nil
   @door_contact : ::Matter::Cluster::BooleanStateCluster? = nil
@@ -100,6 +101,10 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
     @preheat_level.as(::Matter::Cluster::LevelControlCluster)
   end
 
+  def preheat_on_off_cluster : ::Matter::Cluster::OnOffCluster
+    @preheat_on_off.as(::Matter::Cluster::OnOffCluster)
+  end
+
   def cavity_temperature_cluster : ::Matter::Cluster::TemperatureMeasurementCluster
     @cavity_temp.as(::Matter::Cluster::TemperatureMeasurementCluster)
   end
@@ -123,8 +128,10 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
   def sync_status_from_oven(refresh : Bool = true, raise_on_error : Bool = false) : Nil
     started_at = Time.instant
     Log.debug { "sync status start refresh=#{refresh}" }
+    previous_snapshot = current_snapshot
     snapshot = @controller.status_snapshot(refresh: refresh)
     set_snapshot(snapshot)
+    operation_just_closed = operation_became_inactive?(previous_snapshot, snapshot)
 
     with_suppressed_callbacks do
       if temp = snapshot.cavity_temperature_celsius
@@ -133,10 +140,13 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
         cavity_temperature_cluster.update_temperature(nil)
       end
 
-      door_contact_cluster.update_state(snapshot.door_open?)
-      operation_contact_cluster.update_state(snapshot.operation_active?)
+      # BooleanState contact sensors represent open=true, closed=false.
+      # Invert oven booleans so HomeKit UI matches expected labels.
+      door_contact_cluster.update_state(!snapshot.door_open?)
+      operation_contact_cluster.update_state(!snapshot.operation_active?)
       power_button_cluster.on = snapshot.power_on?
       pause_resume_button_cluster.on = snapshot.operation_running?
+      reset_action_controls_for_inactive_operation if operation_just_closed
     end
 
     elapsed_ms = (Time.instant - started_at).total_milliseconds.round(1)
@@ -162,7 +172,7 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
   protected def endpoint_device_types : Hash(UInt16, UInt32)
     {
       ENDPOINT_MICROWAVE    => ::Matter::DeviceTypes::DIMMABLE_LIGHT.to_u32,
-      ENDPOINT_PREHEAT      => ::Matter::DeviceTypes::DIMMER_SWITCH.to_u32,
+      ENDPOINT_PREHEAT      => ::Matter::DeviceTypes::DIMMABLE_LIGHT.to_u32,
       ENDPOINT_CAVITY_TEMP  => ::Matter::DeviceTypes::TEMPERATURE_SENSOR.to_u32,
       ENDPOINT_DOOR_STATE   => ::Matter::DeviceTypes::CONTACT_SENSOR.to_u32,
       ENDPOINT_OPERATION    => ::Matter::DeviceTypes::CONTACT_SENSOR.to_u32,
@@ -199,16 +209,23 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
     )
 
     preheat_endpoint = ::Matter::DataType::EndpointNumber.new(ENDPOINT_PREHEAT)
+    @preheat_on_off = ::Matter::Cluster::OnOffCluster.new(
+      preheat_endpoint,
+      feature_map: ::Matter::Cluster::OnOffCluster::Feature::Lighting
+    )
     @preheat_level = ::Matter::Cluster::LevelControlCluster.new(
       preheat_endpoint,
       current_level: percent_to_level((DEFAULT_PREHEAT_CELSIUS - 100).clamp(0, 100)),
       min_level: LEVEL_MIN,
       max_level: LEVEL_MAX,
-      feature_map: ::Matter::Cluster::LevelControlCluster::Feature::None
+      feature_map: ::Matter::Cluster::LevelControlCluster::Feature::OnOff |
+                   ::Matter::Cluster::LevelControlCluster::Feature::Lighting
     )
+    preheat_on_off_cluster.on_state_changed { |state| handle_preheat_on_off(state) }
     preheat_level_cluster.on_level_changed { |_old_level, new_level| handle_preheat_level_change(new_level) }
     clusters.concat(
       [
+        preheat_on_off_cluster.as(::Matter::Cluster::Base),
         preheat_level_cluster.as(::Matter::Cluster::Base),
         identify_cluster(preheat_endpoint).as(::Matter::Cluster::Base),
         label_cluster(preheat_endpoint, "Preheat Temperature").as(::Matter::Cluster::Base),
@@ -426,6 +443,11 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
     return if @suppress_callbacks.get
 
     if state
+      if level_to_percent(microwave_level_cluster.current_level) <= 0
+        # Treat 0% (level 1) as an inactive command slot so the user can re-arm later.
+        with_suppressed_callbacks { microwave_on_off_cluster.on = false }
+        return
+      end
       seconds = @microwave_seconds_target
       @controller.microwave(seconds)
     else
@@ -439,6 +461,11 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
     return if @suppress_callbacks.get
 
     percent = level_to_percent(level)
+    if percent <= 0
+      @microwave_seconds_target = 1
+      return
+    end
+
     seconds = percent.clamp(1, 100)
     @microwave_seconds_target = seconds
     return unless microwave_on_off_cluster.on?
@@ -452,11 +479,33 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
     return if @suppress_callbacks.get
 
     percent = level_to_percent(level)
+    if percent <= 0
+      @preheat_celsius_target = 100
+      with_suppressed_callbacks { preheat_on_off_cluster.on = false } if preheat_on_off_cluster.on?
+      return
+    end
+
     temperature = 100 + percent
     @preheat_celsius_target = temperature
+    return unless preheat_on_off_cluster.on?
+
     @controller.preheat(temperature)
   rescue ex
     Log.warn(exception: ex) { "preheat action failed" }
+  end
+
+  private def handle_preheat_on_off(state : Bool) : Nil
+    return if @suppress_callbacks.get
+    return unless state
+
+    if level_to_percent(preheat_level_cluster.current_level) <= 0
+      with_suppressed_callbacks { preheat_on_off_cluster.on = false }
+      return
+    end
+
+    @controller.preheat(@preheat_celsius_target)
+  rescue ex
+    Log.warn(exception: ex) { "preheat on/off action failed" }
   end
 
   private def handle_power_button(state : Bool) : Nil
@@ -499,6 +548,23 @@ class HomeconnectOven::Matter < ::Matter::Device::Base
     @snapshot_lock.synchronize do
       @snapshot
     end
+  end
+
+  private def operation_became_inactive?(
+    previous_snapshot : HomeconnectOven::Controller::Snapshot?,
+    current_snapshot : HomeconnectOven::Controller::Snapshot,
+  ) : Bool
+    return !current_snapshot.operation_active? unless previous_snapshot
+    previous_snapshot.operation_active? && !current_snapshot.operation_active?
+  end
+
+  private def reset_action_controls_for_inactive_operation : Nil
+    @microwave_seconds_target = 1
+    @preheat_celsius_target = 100
+    microwave_on_off_cluster.on = false
+    preheat_on_off_cluster.on = false
+    microwave_level_cluster.level = LEVEL_MIN
+    preheat_level_cluster.level = LEVEL_MIN
   end
 
   private def identify_cluster(endpoint : ::Matter::DataType::EndpointNumber) : ::Matter::Cluster::IdentifyCluster
