@@ -1,0 +1,25 @@
+name: homeconnect-oven-matter
+version: 0.1.0
+
+dependencies:
+  matter:
+    github: Crystal-Matter/matter
+
+  homeconnect_local:
+    github: stakach/homeconnect_crystal
+
+  goban:
+    github: soya-daizu/goban
+
+development_dependencies:
+  ameba:
+    github: veelenga/ameba
+
+authors:
+  - Stephen von Takach <steve@place.technology>
+
+targets:
+  oven:
+    main: src/homeconnect-oven-matter.cr
+
+license: MIT

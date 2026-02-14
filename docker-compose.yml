@@ -1,0 +1,20 @@
+services:
+  homeconnect-oven-matter:
+    # build: .
+    image: stakach/oven:latest
+    container_name: homeconnect-oven-matter
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      HC_OVEN_IP: ${HC_OVEN_IP}
+      HC_PSK64: ${HC_PSK64}
+      HC_IDENTITY: homeconnect
+      HC_CIPHER: PSK
+      HC_DEVICE_XML: /certs/${HC_DEVICE_XML}
+      HC_FEATURE_XML: /certs/${HC_FEATURE_XML}
+      MATTER_STORAGE_FILE: /data/homeconnect_oven_matter_storage.json
+      HC_POLL_INTERVAL: "5"
+      LOG_LEVEL: info
+    volumes:
+      - ./certs:/certs:ro
+      - ./data:/data
