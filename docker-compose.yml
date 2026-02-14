@@ -18,3 +18,8 @@ services:
     volumes:
       - ./certs:/certs:ro
       - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10mb"
+        max-file: "1"
