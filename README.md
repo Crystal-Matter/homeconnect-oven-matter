@@ -68,6 +68,14 @@ docker compose up
 - `./certs -> /app/certs` (read-only)
 - `./data -> /app/data` (needs permissive write permissions)
 
+Build the image:
+
+```bash
+docker build -t homeconnect-matter .
+# OR
+docker buildx build --platform linux/arm64 --tag stakach/oven:latest --push .
+```
+
 ## Validation
 
 For real oven validation, use read-only status checks first.

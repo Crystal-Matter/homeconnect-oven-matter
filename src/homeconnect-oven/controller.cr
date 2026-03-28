@@ -177,8 +177,10 @@ class HomeconnectOven::Controller
   end
 
   def microwave(seconds : Int32) : Nil
+    state = status_snapshot
     @mutex.synchronize do
       ensure_connected!
+      stop_internal if state.operation_active?
       duration = seconds.clamp(1, 300)
       Log.info { "microwave command duration_seconds=#{duration}" }
       options = {
@@ -189,8 +191,10 @@ class HomeconnectOven::Controller
   end
 
   def preheat(celsius : Int32) : Nil
+    state = status_snapshot
     @mutex.synchronize do
       ensure_connected!
+      stop_internal if state.operation_active?
       temperature = celsius.clamp(1, 275)
       Log.info { "preheat command target_celsius=#{temperature}" }
       options = {
@@ -220,9 +224,13 @@ class HomeconnectOven::Controller
   def stop : Nil
     @mutex.synchronize do
       ensure_connected!
-      Log.info { "stop command" }
-      command_for(COMMAND_STOP).value_raw = JSON::Any.new(true)
+      stop_internal
     end
+  end
+
+  private def stop_internal : Nil
+    Log.info { "stop command" }
+    command_for(COMMAND_STOP).value_raw = JSON::Any.new(true)
   end
 
   def power(target_on : Bool) : Nil
